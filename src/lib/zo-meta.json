@@ -2,15 +2,15 @@
   "name": "Julley",
   "tagline": "",
   "description": "A free, no-login web tool that retells any school topic through a student's own place and mother tongue, and adds one hands-on task using materials around them. One serverless Claude Haiku call composes the lesson natively in the chosen language across 37 languages, with a spirit line from the philosophy. It refuses to produce exam answers or essays to submit and reteaches the concept instead. Permanently free: no accounts, no payments, no data collected. Three pages (learn flow, /sonam dedication, /about) and three julley_ tables. Dedicated to Sonam Wangchuk.",
-  "born": "2026-07-15T22:27:34.843132+00:00",
+  "born": "2026-07-16T01:14:34.197374+00:00",
   "research_score": 8.6,
   "ethics_verdict": null,
   "ethics_score": null,
   "ethics_concerns": [],
   "qa_score": 177,
   "qa_max": 185,
-  "true_cost": 37.7,
-  "calls": 32,
+  "true_cost": 38.03,
+  "calls": 35,
   "funders": [
     "the founder"
   ],
