@@ -25,6 +25,7 @@ export function GET() {
   return refuse()
 }
 
+// rate-limit-exempt: free-product reject stub — no model call, no write, constant response
 export function POST() {
   return refuse()
 }
