@@ -1,0 +1,123 @@
+/* CANONICAL global styles for Julley. Warm Himalayan palette on standard
+   Tailwind colors (amber, stone, sky), fonts wired through CSS variables set
+   by next/font in app/layout.tsx, plus the shared skeleton and motion
+   utilities used by the learn flow. */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-amber-50/40 text-stone-900;
+    font-family: var(--font-body), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    font-feature-settings: 'kern' 1, 'liga' 1;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-display), var(--font-body), ui-sans-serif, system-ui, sans-serif;
+    @apply font-bold tracking-tight;
+  }
+
+  img,
+  video {
+    @apply h-auto max-w-full;
+  }
+
+  ::selection {
+    @apply bg-amber-200 text-stone-900;
+  }
+
+  a,
+  button,
+  input,
+  select,
+  textarea,
+  summary {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:ring-offset-2 focus-visible:ring-offset-amber-50;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex min-h-[44px] items-center justify-center rounded-xl bg-amber-700 px-6 py-3 text-sm font-bold text-white shadow-sm transition-all hover:bg-amber-800 active:scale-[0.98];
+  }
+
+  .btn-secondary {
+    @apply inline-flex min-h-[44px] items-center justify-center rounded-xl border border-amber-300 bg-white px-6 py-3 text-sm font-bold text-stone-700 shadow-sm transition-all hover:border-amber-500 hover:bg-amber-50 active:scale-[0.98];
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: var(--font-display), var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  }
+
+  .lesson-native {
+    line-height: 1.9;
+  }
+
+  .skeleton {
+    @apply rounded-lg;
+    background: linear-gradient(90deg, #f5f5f4 25%, #e7e5e4 45%, #f5f5f4 65%);
+    background-size: 200% 100%;
+    animation: julley-shimmer 1.6s linear infinite;
+  }
+
+  .rise-in {
+    animation: julley-rise 0.5s ease-out both;
+  }
+
+  .rise-1 { animation-delay: 80ms; }
+  .rise-2 { animation-delay: 160ms; }
+  .rise-3 { animation-delay: 240ms; }
+  .rise-4 { animation-delay: 320ms; }
+  .rise-5 { animation-delay: 400ms; }
+
+  .pop-in {
+    animation: julley-pop 0.35s ease-out both;
+  }
+}
+
+@keyframes julley-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes julley-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes julley-pop {
+  0% { transform: scale(0.97); opacity: 0.6; }
+  60% { transform: scale(1.01); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .skeleton,
+  .rise-in,
+  .pop-in {
+    animation: none;
+  }
+}
