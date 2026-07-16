@@ -11,6 +11,71 @@
 // itself. The marketing landing page can import this component directly.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+// ─── Invisible Cloudflare Turnstile (OPT-IN via env; absent = no-op) ─────────
+// Keeps "free forever, no account": a background bot-check, never a login.
+// The script loads lazily on first lesson request and only when the site key
+// exists; execute() resolves an invisible challenge token or null on any
+// failure (the server only enforces when ITS secret is configured too).
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? '';
+
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (el: HTMLElement, opts: Record<string, unknown>) => string;
+      execute: (widgetId: string) => void;
+      reset: (widgetId: string) => void;
+    };
+  }
+}
+
+let turnstileScriptPromise: Promise<void> | null = null;
+
+function loadTurnstileScript(): Promise<void> {
+  if (turnstileScriptPromise) return turnstileScriptPromise;
+  turnstileScriptPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('turnstile script failed to load'));
+    document.head.appendChild(s);
+  });
+  return turnstileScriptPromise;
+}
+
+async function getTurnstileToken(): Promise<string | null> {
+  if (!TURNSTILE_SITE_KEY) return null; // feature off — nothing to do
+  try {
+    await loadTurnstileScript();
+    if (!window.turnstile) return null;
+    return await new Promise<string | null>((resolve) => {
+      const holder = document.createElement('div');
+      holder.style.display = 'none';
+      document.body.appendChild(holder);
+      const timeout = setTimeout(() => {
+        holder.remove();
+        resolve(null);
+      }, 8000);
+      window.turnstile!.render(holder, {
+        sitekey: TURNSTILE_SITE_KEY,
+        size: 'invisible',
+        callback: (token: string) => {
+          clearTimeout(timeout);
+          holder.remove();
+          resolve(token);
+        },
+        'error-callback': () => {
+          clearTimeout(timeout);
+          holder.remove();
+          resolve(null);
+        },
+      });
+    });
+  } catch {
+    return null; // the server decides whether a missing token blocks
+  }
+}
 import type {
   ApiEnvelope,
   ComposedLesson,
@@ -189,10 +254,20 @@ export default function LearnFlow({ initialLanguages }: LearnFlowProps) {
       });
 
       try {
+        // Invisible Turnstile token, only when the site is configured for it
+        // (NEXT_PUBLIC_TURNSTILE_SITE_KEY set). Absent config = no challenge,
+        // no extra field — Julley stays "free forever, no account".
+        const turnstileToken = await getTurnstileToken();
         const res = await fetch('/api/lesson', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ topic: topic.trim(), place: place.trim(), languageCode: code, age }),
+          body: JSON.stringify({
+            topic: topic.trim(),
+            place: place.trim(),
+            languageCode: code,
+            age,
+            ...(turnstileToken ? { turnstileToken } : {}),
+          }),
         });
         const body = (await res.json().catch(() => null)) as ApiEnvelope<ComposedLesson> | null;
         if (!res.ok || !body || !body.data) {

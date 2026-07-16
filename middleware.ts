@@ -253,8 +253,14 @@ export function middleware(request: NextRequest) {
       return withSecurityHeaders(res)
     }
 
-    // 3. Rate limit lesson composition and any other unsafe API call.
-    if (UNSAFE_METHODS.has(request.method)) {
+    // 3. Rate limit unsafe API calls — EXCEPT /api/lesson, which is owned by
+    // the DURABLE Postgres limiter inside the route (julley_rate_check: per-IP
+    // daily + global daily, atomic, survives cold starts). This per-isolate
+    // memory guard was worthless against a farm for lessons (QA-003/QA-013:
+    // counters reset on cold start, one counter per instance) and its second,
+    // differently-worded 429 violated QA-002. It stays only as a coarse flood
+    // guard for the OTHER unsafe API routes.
+    if (UNSAFE_METHODS.has(request.method) && pathname !== '/api/lesson') {
       const { limited, retryAfterSeconds } = isRateLimited(clientKey(request), Date.now())
       if (limited) {
         const res = NextResponse.json(

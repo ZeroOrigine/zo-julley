@@ -32,6 +32,7 @@ import {
   listGuardrails,
 } from '@/lib/db/catalog';
 import { jsonFail, jsonOk, NO_STORE_HEADERS, zodFieldErrors } from '@/lib/db/http';
+import { getSupabaseServerClient } from '@/lib/supabase/server';
 import type { ComposedLesson, JulleyLanguage } from '@/lib/db/types';
 
 export const dynamic = 'force-dynamic';
@@ -55,10 +56,13 @@ const MODEL_MAX_TOKENS = 3000;
 // differently worded 429 from the middleware.
 // ----------------------------------------------------------------------------
 
-const RATE_WINDOW_MS = 60_000;
-const RATE_MAX_LESSONS_PER_WINDOW = 8;
-const RATE_MAP_HARD_CAP = 5000;
-const recentRequests = new Map<string, number[]>();
+// DURABLE, SHARED, ATOMIC (replaces the in-memory Map that lived per serverless
+// isolate and reset on every cold start — worthless against a farm). One
+// Postgres RPC per lesson: julley_rate_check() increments a GLOBAL daily
+// counter (the true ceiling — bots rotate IPs, nobody rotates the global
+// counter) and a per-IP daily counter, both atomically. Privacy contract held:
+// the RPC stores only md5(day||ip) daily pseudonyms, never raw IPs, and purges
+// anything older than today on every call.
 
 // Client identity for the limiter (QA-003): prefer a platform-verified IP,
 // which a non-browser client cannot forge to reset its bucket and farm the
@@ -82,24 +86,58 @@ function clientKeyFromRequest(request: NextRequest): string {
   return forwardedFirst || 'unknown';
 }
 
-// Returns 0 when the request may proceed. Otherwise returns the whole seconds
-// until the oldest counted request leaves the window, so the 429 carries an
-// honest Retry-After instead of a hardcoded guess.
-function retryAfterSeconds(clientKey: string): number {
-  const now = Date.now();
-  if (recentRequests.size > RATE_MAP_HARD_CAP) {
-    recentRequests.clear();
+// Seconds until midnight UTC — the honest Retry-After for a daily cap
+// ("the free tank refills tomorrow"), never a hardcoded guess.
+function secondsToUtcMidnight(): number {
+  const now = new Date();
+  const midnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+  return Math.max(60, Math.ceil((midnight - now.getTime()) / 1000));
+}
+
+type RateVerdict =
+  | { allowed: true }
+  | { allowed: false; reason: 'ip_cap' | 'global_cap' | 'check_failed' };
+
+// The durable limit. FAIL-CLOSED: if the check itself cannot run, the lesson
+// waits a minute — "could not check" is never "checked and fine" (Rule 14 at
+// the product layer; the shared Anthropic account is what this protects).
+async function durableRateCheck(clientIp: string): Promise<RateVerdict> {
+  try {
+    const supabase = getSupabaseServerClient();
+    const { data, error } = await supabase.rpc('julley_rate_check', { p_ip: clientIp });
+    if (error || !data || typeof data.allowed !== 'boolean') {
+      console.error('[julley/api/lesson] rate check failed:', error?.message ?? 'no data');
+      return { allowed: false, reason: 'check_failed' };
+    }
+    if (data.allowed) return { allowed: true };
+    return { allowed: false, reason: data.reason === 'global_cap' ? 'global_cap' : 'ip_cap' };
+  } catch (err) {
+    console.error('[julley/api/lesson] rate check threw:', err);
+    return { allowed: false, reason: 'check_failed' };
   }
-  const cutoff = now - RATE_WINDOW_MS;
-  const timestamps = (recentRequests.get(clientKey) ?? []).filter((t) => t > cutoff);
-  if (timestamps.length >= RATE_MAX_LESSONS_PER_WINDOW) {
-    recentRequests.set(clientKey, timestamps);
-    const oldest = timestamps[0] ?? now;
-    return Math.max(1, Math.ceil((oldest + RATE_WINDOW_MS - now) / 1000));
+}
+
+// Invisible Cloudflare Turnstile, OPT-IN via env. When TURNSTILE_SECRET_KEY is
+// absent this is a no-op, so Julley keeps working exactly as today ("free
+// forever, no account" — a challenge, never a login). When present, a request
+// without a valid token is refused before it can reach the model.
+async function verifyTurnstile(token: string | undefined, clientIp: string): Promise<boolean> {
+  const secret = process.env.TURNSTILE_SECRET_KEY;
+  if (!secret) return true; // not configured — feature off, never a lockout
+  if (!token) return false;
+  try {
+    const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ secret, response: token, remoteip: clientIp }),
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { success?: boolean };
+    return body.success === true;
+  } catch (err) {
+    console.error('[julley/api/lesson] turnstile verify failed:', err);
+    return false; // fail-closed: an unverifiable challenge is not a passed one
   }
-  timestamps.push(now);
-  recentRequests.set(clientKey, timestamps);
-  return 0;
 }
 
 // ----------------------------------------------------------------------------
@@ -131,6 +169,9 @@ const lessonRequestSchema = z.object({
     .trim()
     .toLowerCase()
     .regex(/^[a-z]{2,12}$/, 'Pick the language from the list.'),
+  // Present only when Cloudflare Turnstile is configured on the site; harmless
+  // and ignored otherwise. Never stored.
+  turnstileToken: z.string().max(4096).optional(),
   age: z.coerce
     .number({
       required_error: 'Tell us your age so we can tune the lesson.',
@@ -361,20 +402,10 @@ function extractJsonObject(text: string): unknown {
 
 export async function POST(request: NextRequest) {
   try {
-    // 1. Best-effort abuse protection. Memory only, never persisted or logged.
-    //    Keyed on a platform-verified IP where available (QA-003).
     const clientKey = clientKeyFromRequest(request);
-    const retryAfter = retryAfterSeconds(clientKey);
-    if (retryAfter > 0) {
-      return jsonFail(
-        429,
-        'too_many_lessons',
-        "You're learning fast. Give it a few seconds, then ask for the next lesson.",
-        { headers: { ...NO_STORE_HEADERS, 'Retry-After': String(retryAfter) } }
-      );
-    }
 
-    // 2. Parse and validate the body.
+    // 1. Parse and validate the body FIRST — malformed requests get their 400
+    //    without touching the shared daily quota.
     let rawBody: unknown;
     try {
       rawBody = await request.json();
@@ -401,7 +432,40 @@ export async function POST(request: NextRequest) {
     const place = sanitizeForPrompt(parsed.data.place);
     const { languageCode, age } = parsed.data;
 
-    // 3. Load composition context from the public catalogs. Reads only:
+    // 2. Invisible Turnstile (only when configured — free forever, no login).
+    const human = await verifyTurnstile(parsed.data.turnstileToken, clientKey);
+    if (!human) {
+      return jsonFail(
+        403,
+        'challenge_failed',
+        'We could not confirm this request came from a browser. Refresh the page and try again.',
+        { headers: NO_STORE_HEADERS }
+      );
+    }
+
+    // 3. The durable shared rate limit (per-IP daily + global daily, atomic in
+    //    Postgres — survives cold starts, shared across every instance).
+    const verdict = await durableRateCheck(clientKey);
+    if (!verdict.allowed) {
+      if (verdict.reason === 'check_failed') {
+        return jsonFail(
+          429,
+          'rate_check_unavailable',
+          'We could not check the free-lesson counter just now. Give it a minute and try again.',
+          { headers: { ...NO_STORE_HEADERS, 'Retry-After': '60' } }
+        );
+      }
+      const refill = secondsToUtcMidnight();
+      const message =
+        verdict.reason === 'global_cap'
+          ? "Julley's free tank for today is empty — everyone together used up the day's lessons. It refills at midnight UTC. Come back tomorrow!"
+          : "You've used today's free lessons on this connection. The free tank refills at midnight UTC — see you tomorrow!";
+      return jsonFail(429, 'daily_limit_reached', message, {
+        headers: { ...NO_STORE_HEADERS, 'Retry-After': String(refill) },
+      });
+    }
+
+    // 4. Load composition context from the public catalogs. Reads only:
     //    nothing about this request is ever written anywhere.
     const [language, ageBand, guardrailsPage, spiritLine] = await Promise.all([
       getLanguageByCode(languageCode),
@@ -424,7 +488,7 @@ export async function POST(request: NextRequest) {
       guardrailsPage.items.length > 0 ? guardrailsPage.items : FALLBACK_GUARDRAILS;
     const line = spiritLine ?? FALLBACK_SPIRIT_LINE;
 
-    // 4. The single serverless Claude Haiku call. One call per lesson, no retries.
+    // 5. The single serverless Claude Haiku call. One call per lesson, no retries.
     const systemPrompt = buildSystemPrompt(language, band, guardrails, line.line_text);
     const userPrompt = buildUserPrompt(topic, place, age, language);
     const modelText = await composeWithClaude(systemPrompt, userPrompt);
