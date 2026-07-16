@@ -1,4 +1,20 @@
 {
-  "present": false,
-  "_note": "Sentinel. The deploy layer overwrites this file per product with real birth data (name, tagline, born, scores, cost, funders, story_url). While present is false or name is absent, /about returns 404. This file MUST exist so the static import never breaks the build (zeroorigine.com ships the sentinel and gets no About page)."
+  "name": "Julley",
+  "tagline": "",
+  "description": "A free, no-login web tool that retells any school topic through a student's own place and mother tongue, and adds one hands-on task using materials around them. One serverless Claude Haiku call composes the lesson natively in the chosen language across 37 languages, with a spirit line from the philosophy. It refuses to produce exam answers or essays to submit and reteaches the concept instead. Permanently free: no accounts, no payments, no data collected. Three pages (learn flow, /sonam dedication, /about) and three julley_ tables. Dedicated to Sonam Wangchuk.",
+  "born": "2026-07-15T22:27:34.843132+00:00",
+  "research_score": 8.6,
+  "ethics_verdict": null,
+  "ethics_score": null,
+  "ethics_concerns": [],
+  "qa_score": 177,
+  "qa_max": 185,
+  "true_cost": 37.7,
+  "calls": 32,
+  "funders": [
+    "the founder"
+  ],
+  "story_url": "https://zeroorigine.com/story/julley",
+  "publisher": "ZeroOrigine",
+  "publisher_url": "https://zeroorigine.com"
 }
